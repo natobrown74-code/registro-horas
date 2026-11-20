@@ -1,0 +1,19 @@
+# Configuración para Render (https://render.com) — plan gratuito, demo con datos de ejemplo.
+# En el plan gratuito los datos se borran al reiniciar; la demo vuelve a cargar los de ejemplo sola.
+services:
+  - type: web
+    name: registro-horas-demo
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node demo.js
+    healthCheckPath: /api/time
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: APP_TZ
+        value: Asia/Jerusalem
+      - key: APP_CURRENCY
+        value: $
+      - key: COOKIE_SECURE
+        value: "1"
