@@ -19,9 +19,6 @@ async function call(method, path, body) {
 const DEMO_ADMIN = { name: 'Administrador Demo', email: 'admin@demo.test', password: 'demo1234' };
 const WORKERS = [
   { name: 'Carlos Martínez', username: 'carlos', phone: '600 111 222', rate: 350, pin: '1111' },
-  { name: 'Lucía Fernández', username: 'lucia', phone: '600 333 444', rate: 400, pin: '2222' },
-  { name: 'Andrés Gómez', username: 'andres', phone: '600 555 666', rate: 320, pin: '3333' },
-  { name: 'Sofía Ramírez', username: 'sofia', phone: '', rate: '', pin: '4444' },
   { name: 'Demo Trabajador', username: 'demo', phone: '', rate: 300, pin: '1234' },
 ];
 
@@ -57,16 +54,9 @@ async function seedDemo(base) {
   }
   for (const w of workers) for (const e of w._entries || []) await call('POST', '/api/admin/entries', e);
 
-  // Una alerta: Andrés entró ayer y no marcó salida
-  const andres = workers.find((w) => w.username === 'andres');
-  const yesterday = addDays(today, -1);
-  const prev = await call('GET', `/api/admin/report?from=${yesterday}&to=${yesterday}&worker=${andres.id}`);
-  for (const e of prev.entries) await call('DELETE', `/api/admin/entries/${e.id}`);
-  await call('POST', '/api/admin/entries', { userId: andres.id, date: yesterday, start: '08:00', note: 'Olvidó marcar la salida' });
-
   console.log('Demo lista.');
   console.log(`Administrador: ${DEMO_ADMIN.email} / ${DEMO_ADMIN.password}`);
-  console.log('Trabajador:    demo / PIN 1234  (otros: carlos 1111, lucia 2222, andres 3333, sofia 4444)');
+  console.log('Trabajador:    demo / PIN 1234  (otro: carlos 1111)');
 }
 
 module.exports = { seedDemo };

@@ -38,6 +38,7 @@ Sirve cualquier servicio que ejecute Node.js y tenga **disco persistente** (Rend
 
 ## Qué incluye esta versión
 
+- **Hoy** (administrador): lista de trabajadores activos con casillas. Con un clic marca la entrada o la salida de todos los seleccionados a la vez, o de uno solo con su botón. Usa la hora del servidor.
 - **Trabajador** (usuario + PIN de 4 números): solo consulta. Ve sus horas (hoy, semana, quincena, mes) y lo que ha ganado en el mes hasta hoy. No puede marcar entrada ni salida ni cambiar horas: todo lo registra el administrador.
 - **Pago**: cada trabajador tiene un pago por día (jornada de 8 horas). Si trabaja menos, se paga la parte proporcional. Cada hora que pase de 8 en un día se paga como hora extra: el precio lo fija el administrador o, si lo deja vacío, es la hora normal + 50 %. Moneda: shekel (₪).
 - **Administrador** (correo + contraseña): alta, edición y desactivación de trabajadores; tabla de horas por día, semana, quincena o mes, filtrable por trabajador; horas por día; totales y pago estimado; añadir / corregir / borrar registros; alertas de quien entró y no marcó salida.

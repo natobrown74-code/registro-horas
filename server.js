@@ -480,6 +480,64 @@ route('GET', '/api/admin/export.xlsx', 'admin', ({ query, res }) => {
   return undefined;
 });
 
+// ---- Asistencia de hoy: el administrador marca entrada / salida (uno o varios a la vez) con la hora del servidor
+function todayBoard() {
+  const now = Date.now();
+  const today = localDate(now);
+  const workers = q("SELECT id, name FROM users WHERE role = 'worker' AND active = 1 ORDER BY name COLLATE NOCASE").all();
+  const open = new Map(q('SELECT * FROM entries WHERE end_ts IS NULL').all().map((e) => [e.user_id, e]));
+  const todays = q('SELECT * FROM entries WHERE work_date = ? ORDER BY start_ts').all(today);
+  return {
+    today, serverNow: now,
+    workers: workers.map((w) => {
+      const mine = todays.filter((e) => e.user_id === w.id);
+      const o = open.get(w.id);
+      const last = [...mine].reverse().find((e) => e.end_ts != null);
+      return {
+        id: w.id, name: w.name,
+        open: o ? { id: o.id, start: o.start_ts, startTime: localTime(o.start_ts), date: o.work_date } : null,
+        minutes: mine.reduce((t, e) => t + entryMinutes(e), 0),
+        lastOut: last ? localTime(last.end_ts) : null,
+      };
+    }),
+  };
+}
+function readIds(body) {
+  const ids = [...new Set((Array.isArray(body.userIds) ? body.userIds : []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  if (!ids.length) throw bad('Elige al menos un trabajador.');
+  return ids;
+}
+route('GET', '/api/admin/today', 'admin', () => todayBoard());
+route('POST', '/api/admin/clock-in', 'admin', ({ user, body }) => {
+  const now = Date.now();
+  const done = [], skipped = [];
+  for (const id of readIds(body)) {
+    const w = q("SELECT id, name FROM users WHERE role = 'worker' AND active = 1 AND id = ?").get(id);
+    if (!w) continue;
+    if (q('SELECT 1 FROM entries WHERE user_id = ? AND end_ts IS NULL').get(id)) { skipped.push(w.name + ' (ya está trabajando)'); continue; }
+    try { assertNoOverlap(id, now, null); } catch (e) { skipped.push(w.name); continue; }
+    q("INSERT INTO entries (user_id, work_date, start_ts, source, created_at, updated_by) VALUES (?, ?, ?, 'clock', ?, ?)")
+      .run(id, localDate(now), now, now, user.id);
+    done.push(w.name);
+  }
+  return { done, skipped, board: todayBoard() };
+});
+route('POST', '/api/admin/clock-out', 'admin', ({ user, body }) => {
+  const now = Date.now();
+  const breakMin = parseInt(body.breakMin ?? 0, 10);
+  if (!Number.isFinite(breakMin) || breakMin < 0 || breakMin > 600) throw bad('Los minutos de descanso no son válidos.');
+  const done = [], skipped = [];
+  for (const id of readIds(body)) {
+    const o = q('SELECT e.*, u.name FROM entries e JOIN users u ON u.id = e.user_id WHERE e.user_id = ? AND e.end_ts IS NULL').get(id);
+    if (!o) continue;
+    const worked = (now - o.start_ts) / 60000;
+    const b = breakMin < worked ? breakMin : 0; // si el descanso no cabe, no se descuenta
+    q('UPDATE entries SET end_ts = ?, break_min = ?, updated_at = ?, updated_by = ? WHERE id = ?').run(now, b, now, user.id, o.id);
+    done.push(o.name);
+  }
+  return { done, skipped, board: todayBoard() };
+});
+
 route('GET', '/api/admin/alerts', 'admin', () => {
   const now = Date.now();
   const today = localDate(now);

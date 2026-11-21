@@ -3,7 +3,7 @@
 
 const state = { cfg: null, me: null, tz: 'UTC', currency: '$', offset: 0 };
 const wk = { status: null, period: 'week', ref: null, range: null, list: null };
-const ad = { tab: 'hours', period: 'week', ref: null, worker: '', workers: [], report: null, alerts: null, showInactive: false };
+const ad = { tab: 'today', board: null, sel: new Set(), breakMin: 0, period: 'week', ref: null, worker: '', workers: [], report: null, alerts: null, showInactive: false };
 
 const $ = (s, el = document) => el.querySelector(s);
 const app = () => $('#app');
@@ -331,6 +331,7 @@ function renderAdminShell() {
     <button class="btn btn-ghost" data-action="logout">Cerrar sesión</button>
   </div></header>
   <nav class="tabs"><div class="inner">
+    <button data-action="tab" data-v="today">Hoy</button>
     <button data-action="tab" data-v="hours">Horas</button>
     <button data-action="tab" data-v="workers">Trabajadores</button>
     <button data-action="tab" data-v="alerts">Alertas <span class="count" id="alert-count" hidden>0</span></button>
@@ -341,11 +342,86 @@ async function showTab(tab) {
   ad.tab = tab;
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.v === tab));
   try {
-    if (tab === 'hours') await loadReport();
+    if (tab === 'today') await loadBoard();
+    else if (tab === 'hours') await loadReport();
     else if (tab === 'workers') renderWorkers();
     else { await loadAlerts(); renderAlerts(); }
   } catch (e) { toast(e.message, true); }
 }
+
+// ---- Hoy: marcar entrada / salida de varios trabajadores a la vez o de uno solo
+async function loadBoard() {
+  ad.board = await api('GET', '/api/admin/today');
+  syncTime(ad.board.serverNow);
+  const ids = new Set(ad.board.workers.map((w) => w.id));
+  ad.sel = new Set([...ad.sel].filter((id) => ids.has(id)));
+  renderBoard();
+}
+function renderBoard() {
+  const b = ad.board;
+  const ws = b.workers;
+  const sel = ws.filter((w) => ad.sel.has(w.id));
+  const canIn = sel.filter((w) => !w.open).length;
+  const canOut = sel.filter((w) => w.open).length;
+  const working = ws.filter((w) => w.open).length;
+  const allOn = ws.length && sel.length === ws.length;
+  const breaks = [0, 15, 30, 45, 60];
+  const rows = ws.map((w) => {
+    const status = w.open
+      ? `<span class="st on"><span class="dot"></span>Trabajando desde las ${w.open.startTime}${w.open.date !== b.today ? ' (otro día)' : ''}</span>`
+      : w.lastOut ? `<span class="st">Salió a las ${w.lastOut} · ${fmtHM(w.minutes)} h hoy</span>`
+      : '<span class="st muted">No ha llegado</span>';
+    return `<div class="att-row ${ad.sel.has(w.id) ? 'sel' : ''}">
+      <label class="att-check"><input type="checkbox" data-sel="${w.id}" ${ad.sel.has(w.id) ? 'checked' : ''}><span class="att-name">${esc(w.name)}</span></label>
+      <span class="att-status">${status}<span class="att-live" data-start="${w.open ? w.open.start : ''}"></span></span>
+      <button class="btn btn-sm ${w.open ? 'btn-out' : 'btn-in'}" data-action="${w.open ? 'att-out-one' : 'att-in-one'}" data-id="${w.id}">${w.open ? 'Salida' : 'Entrada'}</button>
+    </div>`;
+  }).join('');
+  $('#admin-main').innerHTML = `
+  <div class="card att-card">
+    <div class="row" style="margin-bottom:4px"><h2 style="margin:0">Asistencia de hoy</h2><span class="spacer"></span><span class="muted">${esc(longDate(b.today))} · ${working} trabajando</span></div>
+    <p class="muted small" style="margin:0 0 14px">Marca a los que llegaron y pulsa <b>Entrada</b>. Al terminar, márcalos y pulsa <b>Salida</b>. Se usa la hora del servidor.</p>
+    <div class="att-actions">
+      <button class="btn btn-in big-act" data-action="att-in" ${canIn ? '' : 'disabled'}>Entrada${canIn ? ` (${canIn})` : ''}</button>
+      <button class="btn btn-out big-act" data-action="att-out" ${canOut ? '' : 'disabled'}>Salida${canOut ? ` (${canOut})` : ''}</button>
+    </div>
+    <div class="att-break"><span class="muted small">Descanso que se descuenta al marcar salida:</span>
+      <div class="seg seg-sm">${breaks.map((m) => `<button type="button" class="${ad.breakMin === m ? 'on' : ''}" data-action="att-break" data-v="${m}">${m ? m + ' min' : 'Nada'}</button>`).join('')}</div>
+    </div>
+    ${ws.length ? `<div class="att-list">
+      <div class="att-row att-head"><label class="att-check"><input type="checkbox" data-sel="all" ${allOn ? 'checked' : ''}><span>Seleccionar todos</span></label>
+        <span class="att-quick"><button class="link" data-action="att-pick" data-v="out">Elegir los que no han llegado</button> · <button class="link" data-action="att-pick" data-v="in">Elegir los que trabajan</button></span></div>
+      ${rows}</div>` : '<div class="empty">No hay trabajadores activos. Añádelos en la pestaña «Trabajadores».</div>'}
+  </div>`;
+  tickBoard();
+}
+function tickBoard() {
+  document.querySelectorAll('.att-live').forEach((el) => {
+    const st = Number(el.dataset.start);
+    el.textContent = st ? ` · ${fmtHM((nowServer() - st) / 60000)} h` : '';
+  });
+}
+async function attendance(kind, ids) {
+  if (!ids.length) return;
+  try {
+    const r = await api('POST', kind === 'in' ? '/api/admin/clock-in' : '/api/admin/clock-out', { userIds: ids, breakMin: ad.breakMin });
+    ad.board = r.board; syncTime(r.board.serverNow);
+    if (ids.length > 1) ad.sel.clear();
+    renderBoard();
+    const hora = localTime(r.board.serverNow);
+    const n = r.done.length;
+    if (n) toast(`${kind === 'in' ? 'Entrada' : 'Salida'} a las ${hora}: ${n === 1 ? r.done[0] : n + ' trabajadores'}`);
+    if (r.skipped.length) toast('No se pudo marcar: ' + r.skipped.join(', '), true);
+    loadAlerts().catch(() => {});
+  } catch (e) { toast(e.message, true); }
+}
+document.addEventListener('change', (ev) => {
+  const t = ev.target;
+  if (!t.matches || !t.matches('[data-sel]') || !ad.board) return;
+  if (t.dataset.sel === 'all') ad.sel = t.checked ? new Set(ad.board.workers.map((w) => w.id)) : new Set();
+  else { const id = Number(t.dataset.sel); if (t.checked) ad.sel.add(id); else ad.sel.delete(id); }
+  renderBoard();
+});
 
 // ---- Horas
 async function loadReport() {
@@ -561,6 +637,12 @@ document.addEventListener('click', async (ev) => {
     case 'wk-period': wk.period = v; wk.ref = wk.status.today; await loadMyEntries().catch((e) => toast(e.message, true)); renderWorker(); break;
     case 'wk-nav': wk.ref = v === '0' ? wk.status.today : shiftRef(wk.period, wk.ref, Number(v)); await loadMyEntries().catch((e) => toast(e.message, true)); renderWorker(); break;
     case 'tab': if (v === 'hours') ad.worker = ''; showTab(v); break;
+    case 'att-in': attendance('in', ad.board.workers.filter((w) => ad.sel.has(w.id) && !w.open).map((w) => w.id)); break;
+    case 'att-out': attendance('out', ad.board.workers.filter((w) => ad.sel.has(w.id) && w.open).map((w) => w.id)); break;
+    case 'att-in-one': attendance('in', [Number(id)]); break;
+    case 'att-out-one': attendance('out', [Number(id)]); break;
+    case 'att-break': ad.breakMin = Number(v); renderBoard(); break;
+    case 'att-pick': ad.sel = new Set(ad.board.workers.filter((w) => (v === 'in' ? w.open : !w.open)).map((w) => w.id)); renderBoard(); break;
     case 'open-worker': ad.worker = id; window.scrollTo(0, 0); loadReport().catch((e) => toast(e.message, true)); break;
     case 'back-list': ad.worker = ''; loadReport().catch((e) => toast(e.message, true)); break;
     case 'ad-period': ad.period = v; ad.ref = localDate(nowServer()); loadReport().catch((e) => toast(e.message, true)); break;
@@ -589,6 +671,7 @@ document.addEventListener('click', async (ev) => {
 function tick() {
   const c = $('#clock');
   if (c) c.textContent = localTime(nowServer());
+  if (ad.tab === 'today' && state.me?.role === 'admin') tickBoard();
 }
 setInterval(tick, 1000);
 
@@ -596,7 +679,7 @@ setInterval(tick, 1000);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible' || !state.me || $('#modal-root').innerHTML) return;
   if (state.me.role === 'worker') loadWorker();
-  else loadAlerts().catch(() => {});
+  else { loadAlerts().catch(() => {}); if (ad.tab === 'today') loadBoard().catch(() => {}); }
 });
 
 boot();
