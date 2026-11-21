@@ -2,7 +2,7 @@
 /* Registro de Horas — interfaz (sin frameworks) */
 
 const state = { cfg: null, me: null, tz: 'UTC', currency: '$', offset: 0 };
-const wk = { status: null, period: 'day', ref: null, range: null, list: null };
+const wk = { status: null, period: 'week', ref: null, range: null, list: null };
 const ad = { tab: 'hours', period: 'week', ref: null, worker: '', workers: [], report: null, alerts: null, showInactive: false };
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -271,83 +271,44 @@ async function loadMyEntries() {
 }
 function renderWorker() {
   const s = wk.status;
-  const open = s.open;
   const r = wk.range;
   const isCurrent = r.from <= s.today && s.today <= r.to;
   const items = wk.list.entries.map((e) => `<li>
-      <div><div class="when">${esc(wk.period === 'day' ? '' : dayShort(e.date) + ' · ')}${e.startTime} – ${e.endTime ?? '…'}</div>
-      <div class="muted small">${e.breakMin ? `Descanso ${e.breakMin} min · ` : ''}${srcBadge(e.source)}${e.end == null ? ' <span class="badge green">Trabajando</span>' : ''}</div></div>
+      <div><div class="when">${esc(dayShort(e.date))}</div>
+      <div class="muted small">${e.startTime} – ${e.endTime ?? '…'}${e.breakMin ? ` · descanso ${e.breakMin} min` : ''}</div></div>
       <div class="hrs">${e.end == null ? '—' : fmtDur(e.minutes)}</div></li>`).join('');
+  const hasPay = s.month.pay != null;
 
   app().innerHTML = `
   <header class="top"><div class="inner">
     <div style="flex:1"><div class="hello">${esc(state.me.name)}</div>
-    <div class="clock" id="clock">${localTime(nowServer())}</div>
     <div class="subtle">${longDate(s.today)}</div></div>
     <button class="btn btn-ghost" data-action="logout">Salir de la app</button>
   </div></header>
   <main class="wrap"><div class="worker-layout"><div>
-    <section class="card status ${open ? 'on' : ''}">
-      ${open
-        ? `<div class="status-text"><span class="dot"></span>Trabajando desde las <b>${open.startTime}</b>${open.date !== s.today ? ` del ${shortDate(open.date)}` : ''}</div><div class="elapsed" id="elapsed"></div>`
-        : '<div class="status-text">No has marcado entrada</div>'}
-      <button class="big ${open ? 'big-out' : 'big-in'}" data-action="${open ? 'clock-out' : 'clock-in'}">${open ? 'SALIR' : 'ENTRAR'}</button>
-      <p class="muted small" style="margin:12px 0 0">La hora se toma del servidor.</p>
+    <section class="card earn-card">
+      <div class="earn-l">${hasPay ? 'Ganado este mes' : 'Horas este mes'}</div>
+      <div class="earn-n">${hasPay ? fmtMoney(s.month.pay) : fmtHM(s.month.minutes)}</div>
+      <div class="muted small">Del ${shortDate(s.month.from)} a hoy · ${fmtHM(s.month.minutes)} h trabajadas${s.month.extraMinutes ? ` (${fmtHM(s.month.extraMinutes)} h extra)` : ''}</div>
     </section>
     <section class="totals">
       <div class="total"><div class="n">${fmtHM(s.totals.day)}</div><div class="l">Hoy</div></div>
       <div class="total"><div class="n">${fmtHM(s.totals.week)}</div><div class="l">Esta semana</div></div>
       <div class="total"><div class="n">${fmtHM(s.totals.month)}</div><div class="l">Este mes</div></div>
     </section>
-    <p class="muted small" style="text-align:center;margin:0 0 16px">¿Olvidaste marcar? Avisa al administrador para que lo corrija.</p>
+    <p class="muted small" style="text-align:center;margin:0 0 16px">Tus horas las registra el administrador. Si ves algún error, avísale.</p>
   </div>
   <section class="card">
     <h2>Mis horas</h2>
-    ${periodSeg(['day', 'week', 'month'], wk.period, 'wk-period')}
+    ${periodSeg(['week', 'fortnight', 'month'], wk.period, 'wk-period')}
     ${periodNav(r.label, 'wk-nav', isCurrent)}
-    ${items ? `<ul class="list">${items}</ul>` : '<div class="empty">No hay registros en este período.</div>'}
-    <div class="row" style="border-top:2px solid var(--text);padding-top:10px;margin-top:4px;font-weight:800">
-      <span>Total</span><span class="spacer"></span><span>${fmtDur(wk.list.totalMinutes)}</span></div>
+    ${items ? `<ul class="list">${items}</ul>` : '<div class="empty">No hay horas registradas en este período.</div>'}
+    <div class="row sum-row"><span>Total horas</span><span class="spacer"></span><span>${fmtDur(wk.list.totalMinutes)}</span></div>
+    ${wk.list.extraMinutes ? `<div class="row sum-row sub"><span>De ellas, extra</span><span class="spacer"></span><span>${fmtDur(wk.list.extraMinutes)}</span></div>` : ''}
+    ${wk.list.pay != null ? `<div class="row sum-row"><span>Ganado en este período</span><span class="spacer"></span><span>${fmtMoney(wk.list.pay)}</span></div>` : ''}
   </section></div></main>`;
-  tick();
 }
 
-async function clockIn(btn) {
-  btn.disabled = true;
-  try {
-    const s = await api('POST', '/api/my/clock-in', {});
-    syncTime(s.serverNow);
-    toast(`Entrada registrada a las ${s.open.startTime}`);
-    wk.status = s; wk.ref = s.today;
-    await loadMyEntries(); renderWorker();
-  } catch (e) { toast(e.message, true); btn.disabled = false; }
-}
-function clockOut() {
-  const opts = [0, 15, 30, 45, 60, 90];
-  openModal({
-    title: 'Marcar salida',
-    submitLabel: 'Confirmar salida',
-    body: `<p>¿Cuánto tiempo de descanso tomaste hoy?</p>
-      <div class="chips">${opts.map((m) => `<button type="button" class="chip ${m === 0 ? 'on' : ''}" data-min="${m}">${m === 0 ? 'Nada' : m < 60 ? m + ' min' : fmtDur(m)}</button>`).join('')}</div>
-      <label for="b-other">Otro (minutos)</label>
-      <input id="b-other" name="breakMin" type="number" inputmode="numeric" min="0" max="600" value="0">`,
-    onOpen(form) {
-      const input = $('#b-other', form);
-      form.querySelectorAll('.chip').forEach((c) => c.addEventListener('click', () => {
-        form.querySelectorAll('.chip').forEach((x) => x.classList.remove('on'));
-        c.classList.add('on'); input.value = c.dataset.min;
-      }));
-      input.addEventListener('input', () => form.querySelectorAll('.chip').forEach((x) => x.classList.toggle('on', x.dataset.min === input.value)));
-    },
-    async onSubmit(d) {
-      const s = await api('POST', '/api/my/clock-out', { breakMin: Number(d.breakMin) || 0 });
-      syncTime(s.serverNow);
-      toast(`Salida registrada a las ${localTime(s.serverNow)}`);
-      wk.status = s; wk.ref = s.today;
-      await loadMyEntries(); renderWorker();
-    },
-  });
-}
 // ------------------------------------------------------------ Vista del administrador
 async function loadAdmin() {
   if (!ad.ref) ad.ref = localDate(nowServer());
@@ -397,77 +358,85 @@ function renderReport() {
   const r = ad.range, rep = ad.report;
   const today = localDate(nowServer());
   const isCurrent = r.from <= today && today <= r.to;
+  const toolbar = (extra) => `<div class="card no-print"><div class="toolbar">
+    ${periodSeg(['day', 'week', 'fortnight', 'month'], ad.period, 'ad-period')}
+    ${periodNav(r.label, 'ad-nav', isCurrent)}
+  </div>
+  <div class="row" style="margin-top:10px">${extra}
+    <span class="spacer"></span>
+    <button class="btn btn-light" data-action="export">Excel</button>
+    <button class="btn btn-light" data-action="print">Imprimir / PDF</button>
+  </div></div>`;
+  if (ad.worker) return renderWorkerDetail(r, rep, toolbar);
+
   const hasRates = rep.summary.some((w) => w.rate);
-  const openCount = rep.summary.reduce((s, w) => s + w.open, 0);
-  const withHours = rep.summary.filter((w) => w.minutes > 0).length;
-  const workerOpts = ad.workers.map((w) => `<option value="${w.id}" ${String(w.id) === String(ad.worker) ? 'selected' : ''}>${esc(w.name)}${w.active ? '' : ' (inactivo)'}</option>`).join('');
+  const lines = rep.summary.map((w) => `<button class="worker-line ${w.active ? '' : 'inactive'}" data-action="open-worker" data-id="${w.id}">
+      <span class="wl-name">${esc(w.name)}${w.open ? ` <span class="badge red">${w.open} sin salida</span>` : ''}</span>
+      <span class="wl-hours">${fmtHM(w.minutes)} h</span>
+      <span class="wl-pay">${w.rate ? fmtMoney(w.pay) : '<span class="muted small">sin tarifa</span>'}</span>
+      <svg class="wl-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>`).join('');
+  const printRows = rep.summary.map((w) => `<tr><td>${esc(w.name)}</td><td class="num">${w.days}</td><td class="num">${fmtHM(w.minutes)}</td><td class="num">${fmtHM(w.extraMinutes)}</td>${hasRates ? `<td class="num">${fmtMoney(w.pay)}</td>` : ''}<td class="sign"></td></tr>`).join('');
 
-  const nDays = daysBetween(r.from, r.to);
-  const days = nDays > 1 && nDays <= 16 ? Array.from({ length: nDays }, (_, i) => addDays(r.from, i)) : null;
+  $('#admin-main').innerHTML = `
+  ${toolbar('<button class="btn" data-action="new-entry">Añadir horas</button>')}
+  <div class="card no-print list-card">
+    ${rep.summary.length ? `<div class="worker-head"><span>Trabajador</span><span>Horas</span><span>Total a pagar</span><span></span></div>
+    ${lines}
+    <div class="worker-line total-line"><span class="wl-name">Total</span><span class="wl-hours">${fmtHM(rep.total.minutes)} h</span><span class="wl-pay">${rep.total.pay != null ? fmtMoney(rep.total.pay) : '—'}</span><span class="wl-chev"></span></div>`
+    : '<div class="empty">Aún no hay trabajadores. Añádelos en la pestaña «Trabajadores».</div>'}
+  </div>
+  <div class="print-only"><h1>${esc(state.cfg.business)} — Resumen de horas para nómina</h1>
+    <p>Período: <b>${esc(r.label)}</b> (${r.from} al ${r.to}) · Jornada normal: 8 h al día; lo que pasa de 8 h se paga como hora extra.</p>
+    <table><thead><tr><th>Trabajador</th><th class="num">Días</th><th class="num">Horas</th><th class="num">Extras</th>${hasRates ? '<th class="num">Total a pagar</th>' : ''}<th>Firma</th></tr></thead>
+    <tbody>${printRows}</tbody>
+    <tfoot><tr><td>TOTAL</td><td></td><td class="num">${fmtHM(rep.total.minutes)}</td><td class="num">${fmtHM(rep.total.extraMinutes)}</td>${hasRates ? `<td class="num">${fmtMoney(rep.total.pay)}</td>` : ''}<td></td></tr></tfoot></table></div>`;
+}
 
-  const summaryRows = rep.summary.map((w) => `<tr class="${w.active ? '' : 'inactive'}">
-      <td><b>${esc(w.name)}</b>${w.open ? ` <span class="badge red">${w.open} sin salida</span>` : ''}</td>
-      <td class="num">${w.days}</td><td class="num"><b>${fmtHM(w.minutes)}</b></td>
-      ${hasRates ? `<td class="num">${w.rate ? fmtMoney(w.rate) : '—'}</td><td class="num"><b>${fmtMoney(w.pay)}</b></td>` : ''}
-      <td class="print-only sign"></td></tr>`).join('');
-
-  const gridRows = days ? rep.summary.map((w) => `<tr><td><b>${esc(w.name)}</b></td>${days.map((d) => {
-    const m = w.byDate[d] || 0; return `<td class="num ${m ? '' : 'cell-zero'}">${m ? fmtHM(m) : '·'}</td>`;
-  }).join('')}<td class="num"><b>${fmtHM(w.minutes)}</b></td></tr>`).join('') : '';
-  const dayTotals = days ? days.map((d) => rep.summary.reduce((s, w) => s + (w.byDate[d] || 0), 0)) : [];
-
-  const detailRows = rep.entries.map((e) => `<tr>
-      <td>${esc(dayShort(e.date))}</td><td>${esc(e.name)}</td>
+function renderWorkerDetail(r, rep, toolbar) {
+  const w = rep.summary[0] || ad.workers.find((x) => String(x.id) === String(ad.worker)) || { name: '' };
+  // Horas por día, para marcar las extras en la primera fila de cada día
+  const firstOfDay = new Set();
+  const seen = new Set();
+  for (const e of [...rep.entries].sort((a, b) => a.start - b.start)) if (!seen.has(e.date)) { seen.add(e.date); firstOfDay.add(e.id); }
+  const rows = [...rep.entries].sort((a, b) => b.start - a.start).map((e) => {
+    const dayMin = (w.byDate || {})[e.date] || 0;
+    const extra = firstOfDay.has(e.id) ? Math.max(0, dayMin - 480) : 0;
+    return `<tr>
+      <td>${esc(dayShort(e.date))}</td>
       <td class="num">${e.startTime}</td>
       <td class="num">${e.endTime ? e.endTime + (e.endDate !== e.date ? ' <span class="badge">+1 día</span>' : '') : '<span class="badge red">Sin salida</span>'}</td>
       <td class="num">${e.breakMin ? e.breakMin + ' min' : '—'}</td>
       <td class="num"><b>${e.end == null ? '—' : fmtHM(e.minutes)}</b></td>
+      <td class="num">${extra ? `<span class="badge amber">+${fmtHM(extra)}</span>` : '—'}</td>
       <td>${srcBadge(e.source)}${e.note ? ` <span class="note" title="${esc(e.note)}">· ${esc(e.note.length > 24 ? e.note.slice(0, 24) + '…' : e.note)}</span>` : ''}</td>
-      <td class="no-print"><button class="btn btn-light btn-sm" data-action="edit-entry" data-id="${e.id}">Editar</button>
-      <button class="btn btn-danger btn-sm" data-action="del-entry" data-id="${e.id}">Borrar</button></td></tr>`).join('');
+      <td class="no-print nowrap"><button class="btn btn-light btn-sm" data-action="edit-entry" data-id="${e.id}">Editar</button>
+      <button class="btn btn-danger btn-sm" data-action="del-entry" data-id="${e.id}">Borrar</button></td></tr>`;
+  }).join('');
+  const pay = w.rate ? `<div class="card pay-card">
+      <div class="pay-row"><span>Jornadas (${fmtMoney(w.rate)} por día de 8 h)</span><b>${fmtMoney(w.basePay)}</b></div>
+      <div class="pay-row"><span>Horas extra: ${fmtHM(w.extraMinutes)} h × ${fmtMoney(w.otRate)}</span><b>${fmtMoney(w.extraPay)}</b></div>
+      <div class="pay-row pay-total"><span>Total a pagar</span><b>${fmtMoney(w.pay)}</b></div>
+    </div>` : '<div class="card muted small">Este trabajador no tiene pago por día. Ponlo en «Trabajadores» → Editar.</div>';
 
   $('#admin-main').innerHTML = `
-  <div class="card no-print"><div class="toolbar">
-    ${periodSeg(['day', 'week', 'fortnight', 'month'], ad.period, 'ad-period')}
-    ${periodNav(r.label, 'ad-nav', isCurrent)}
-  </div>
-  <div class="row" style="margin-top:10px">
-    <select id="worker-filter" style="flex:1;min-width:180px" aria-label="Filtrar por trabajador"><option value="">Todos los trabajadores</option>${workerOpts}</select>
-    <button class="btn" data-action="new-entry">Añadir horas</button>
-    <button class="btn btn-light" data-action="export">Excel</button>
-    <button class="btn btn-light" data-action="print">Imprimir / PDF</button>
-  </div></div>
-
-  <div class="print-only"><h1>${esc(state.cfg.business)} — Resumen de horas para nómina</h1>
-    <p>Período: <b>${esc(r.label)}</b> (${r.from} al ${r.to})${ad.worker ? ' · Trabajador: ' + esc(ad.workers.find((w) => String(w.id) === String(ad.worker))?.name || '') : ''}</p></div>
-
+  <div class="row no-print" style="margin-bottom:12px"><button class="btn btn-ghost" data-action="back-list">‹ Todos los trabajadores</button></div>
+  ${toolbar('<button class="btn" data-action="new-entry">Añadir horas</button>')}
+  <div class="print-only"><h1>${esc(state.cfg.business)} — Detalle de horas</h1><p>Período: <b>${esc(r.label)}</b> (${r.from} al ${r.to})</p></div>
+  <h2 class="detail-name">${esc(w.name)}</h2>
   <div class="kpis">
-    <div class="total"><div class="n">${fmtHM(rep.total.minutes)}</div><div class="l">Horas totales</div></div>
-    ${rep.total.pay != null ? `<div class="total"><div class="n">${fmtMoney(rep.total.pay)}</div><div class="l">Pago estimado</div></div>` : ''}
-    <div class="total"><div class="n">${withHours}</div><div class="l">Trabajadores con horas</div></div>
-    <div class="total no-print"><div class="n" style="color:${openCount ? 'var(--red)' : 'inherit'}">${openCount}</div><div class="l">Sin salida</div></div>
+    <div class="total"><div class="n">${fmtHM(w.minutes || 0)}</div><div class="l">Horas</div></div>
+    <div class="total"><div class="n">${fmtHM(w.extraMinutes || 0)}</div><div class="l">Horas extra</div></div>
+    <div class="total"><div class="n">${w.days || 0}</div><div class="l">Días trabajados</div></div>
+    ${w.rate ? `<div class="total"><div class="n">${fmtMoney(w.pay)}</div><div class="l">Total a pagar</div></div>` : ''}
   </div>
-
-  <div class="card"><h2>Resumen por trabajador</h2>
-  ${rep.summary.length ? `<div class="table-wrap"><table>
-    <thead><tr><th>Trabajador</th><th class="num">Días</th><th class="num">Horas</th>${hasRates ? '<th class="num">Tarifa/h</th><th class="num">Pago estimado</th>' : ''}<th class="print-only">Firma</th></tr></thead>
-    <tbody>${summaryRows}</tbody>
-    <tfoot><tr><td>TOTAL</td><td></td><td class="num">${fmtHM(rep.total.minutes)}</td>${hasRates ? `<td></td><td class="num">${fmtMoney(rep.total.pay)}</td>` : ''}<td class="print-only"></td></tr></tfoot>
-  </table></div>` : '<div class="empty">Aún no hay trabajadores. Añádelos en la pestaña «Trabajadores».</div>'}
-  </div>
-
-  ${days && rep.summary.length ? `<div class="card"><h2>Horas por día</h2><div class="table-wrap"><table>
-    <thead><tr><th>Trabajador</th>${days.map((d) => `<th class="num">${esc(dayShort(d))}</th>`).join('')}<th class="num">Total</th></tr></thead>
-    <tbody>${gridRows}</tbody>
-    <tfoot><tr><td>TOTAL</td>${dayTotals.map((m) => `<td class="num">${m ? fmtHM(m) : '·'}</td>`).join('')}<td class="num">${fmtHM(rep.total.minutes)}</td></tr></tfoot>
-  </table></div></div>` : ''}
-
-  <div class="card"><h2>Detalle de registros</h2>
+  ${pay}
+  <div class="card"><h2>Registros</h2>
   ${rep.entries.length ? `<div class="table-wrap"><table>
-    <thead><tr><th>Fecha</th><th>Trabajador</th><th class="num">Entrada</th><th class="num">Salida</th><th class="num">Descanso</th><th class="num">Horas</th><th>Origen</th><th class="no-print"></th></tr></thead>
-    <tbody>${detailRows}</tbody></table></div>` : '<div class="empty">No hay registros en este período.</div>'}
-  </div>`;
-  $('#worker-filter').onchange = (e) => { ad.worker = e.target.value; loadReport().catch((x) => toast(x.message, true)); };
+    <thead><tr><th>Fecha</th><th class="num">Entrada</th><th class="num">Salida</th><th class="num">Descanso</th><th class="num">Horas</th><th class="num">Extra</th><th>Origen</th><th class="no-print"></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>` : '<div class="empty">No hay registros en este período.</div>'}
+  </div>
+  <p class="print-only" style="margin-top:40px">Firma del trabajador: ______________________________</p>`;
 }
 
 function entryModal(entry) {
@@ -513,11 +482,12 @@ function renderWorkers() {
     <button class="btn" data-action="new-worker">Añadir trabajador</button></div>
     ${inactiveCount ? `<label class="check"><input type="checkbox" id="show-inactive" ${ad.showInactive ? 'checked' : ''}> Mostrar desactivados (${inactiveCount})</label>` : ''}
     ${list.length ? `<div class="table-wrap"><table>
-      <thead><tr><th>Nombre</th><th>Usuario</th><th>Teléfono</th><th class="num">Tarifa/h</th><th>Estado</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Usuario</th><th>Teléfono</th><th class="num">Pago por día</th><th class="num">Hora extra</th><th>Estado</th><th></th></tr></thead>
       <tbody>${list.map((w) => `<tr class="${w.active ? '' : 'inactive'}">
         <td><b>${esc(w.name)}</b></td><td>${esc(w.username)}</td>
         <td>${w.phone ? `<a href="tel:${esc(w.phone)}">${esc(w.phone)}</a>` : '—'}</td>
         <td class="num">${w.rate ? fmtMoney(w.rate) : '—'}</td>
+        <td class="num">${w.rate ? fmtMoney(w.otRate ?? w.otRateAuto) : '—'}</td>
         <td>${w.active ? '<span class="badge green">Activo</span>' : '<span class="badge">Desactivado</span>'}</td>
         <td><button class="btn btn-light btn-sm" data-action="edit-worker" data-id="${w.id}">Editar</button></td></tr>`).join('')}</tbody>
     </table></div>` : '<div class="empty">Todavía no hay trabajadores. Pulsa «Añadir trabajador» para empezar.</div>'}
@@ -533,13 +503,23 @@ function workerModal(w) {
     body: `<label for="w-name">Nombre completo</label><input id="w-name" name="name" value="${esc(w?.name || '')}" required>
       <label for="w-user">Usuario para entrar</label><input id="w-user" name="username" autocapitalize="none" autocorrect="off" spellcheck="false" value="${esc(w?.username || '')}" required>
       <label for="w-phone">Teléfono (opcional)</label><input id="w-phone" name="phone" type="tel" value="${esc(w?.phone || '')}">
-      <label for="w-rate">Tarifa por hora (opcional)</label><input id="w-rate" name="rate" type="number" inputmode="decimal" min="0" step="0.01" value="${w?.rate ?? ''}" placeholder="Ej.: 8.50">
+      <label for="w-rate">Pago por día (jornada de 8 horas)</label><input id="w-rate" name="rate" type="number" inputmode="decimal" min="0" step="0.01" value="${w?.rate ?? ''}" placeholder="Ej.: 350">
+      <label for="w-ot">Precio de cada hora extra (después de 8 h)</label><input id="w-ot" name="otRate" type="number" inputmode="decimal" min="0" step="0.01" value="${w?.otRate ?? ''}">
+      <p class="muted small" id="w-ot-hint" style="margin-top:4px"></p>
       <label for="w-pin">${isNew ? 'PIN de 4 números' : 'Nuevo PIN (déjalo vacío para no cambiarlo)'}</label>
       <input id="w-pin" name="pin" class="pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" ${isNew ? 'required' : ''}>
       ${isNew ? '' : `<label class="check"><input type="checkbox" name="active" ${w.active ? 'checked' : ''}> Activo (puede entrar y fichar)</label>`}
       <p class="muted small">Entrega al trabajador su <b>usuario</b> y su <b>PIN</b> para que pueda entrar desde su celular.</p>`,
     onOpen(form) {
       const name = $('#w-name', form), user = $('#w-user', form), pin = $('#w-pin', form);
+      const rate = $('#w-rate', form), ot = $('#w-ot', form), hint = $('#w-ot-hint', form);
+      const upd = () => {
+        const r = Number(String(rate.value).replace(',', '.'));
+        const auto = r > 0 ? Math.round(r / 8 * 1.5 * 100) / 100 : null;
+        ot.placeholder = auto ? String(auto) : '';
+        hint.textContent = auto ? (ot.value ? 'Precio fijado por ti.' : `Si lo dejas vacío: ${fmtMoney(auto)} (hora normal + 50 %).`) : 'Si lo dejas vacío se calcula solo: hora normal + 50 %.';
+      };
+      rate.addEventListener('input', upd); ot.addEventListener('input', upd); upd();
       let touched = !isNew;
       user.addEventListener('input', () => { touched = true; });
       name.addEventListener('input', () => { if (!touched) user.value = slug(name.value); });
@@ -578,11 +558,11 @@ document.addEventListener('click', async (ev) => {
   switch (action) {
     case 'login-mode': loginMode = v; store.set('loginMode', v); renderLogin(); break;
     case 'logout': logout(); break;
-    case 'clock-in': clockIn(el); break;
-    case 'clock-out': clockOut(); break;
     case 'wk-period': wk.period = v; wk.ref = wk.status.today; await loadMyEntries().catch((e) => toast(e.message, true)); renderWorker(); break;
     case 'wk-nav': wk.ref = v === '0' ? wk.status.today : shiftRef(wk.period, wk.ref, Number(v)); await loadMyEntries().catch((e) => toast(e.message, true)); renderWorker(); break;
-    case 'tab': showTab(v); break;
+    case 'tab': if (v === 'hours') ad.worker = ''; showTab(v); break;
+    case 'open-worker': ad.worker = id; window.scrollTo(0, 0); loadReport().catch((e) => toast(e.message, true)); break;
+    case 'back-list': ad.worker = ''; loadReport().catch((e) => toast(e.message, true)); break;
     case 'ad-period': ad.period = v; ad.ref = localDate(nowServer()); loadReport().catch((e) => toast(e.message, true)); break;
     case 'ad-nav': ad.ref = v === '0' ? localDate(nowServer()) : shiftRef(ad.period, ad.ref, Number(v)); loadReport().catch((e) => toast(e.message, true)); break;
     case 'new-entry': entryModal(null); break;
@@ -609,8 +589,6 @@ document.addEventListener('click', async (ev) => {
 function tick() {
   const c = $('#clock');
   if (c) c.textContent = localTime(nowServer());
-  const el = $('#elapsed');
-  if (el && wk.status?.open) el.textContent = `Llevas ${fmtDur((nowServer() - wk.status.open.start) / 60000)}`;
 }
 setInterval(tick, 1000);
 

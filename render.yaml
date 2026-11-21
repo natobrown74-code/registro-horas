@@ -14,6 +14,6 @@ services:
       - key: APP_TZ
         value: Asia/Jerusalem
       - key: APP_CURRENCY
-        value: $
+        value: "₪"
       - key: COOKIE_SECURE
         value: "1"

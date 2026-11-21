@@ -18,11 +18,11 @@ async function call(method, path, body) {
 
 const DEMO_ADMIN = { name: 'Administrador Demo', email: 'admin@demo.test', password: 'demo1234' };
 const WORKERS = [
-  { name: 'Carlos Martínez', username: 'carlos', phone: '600 111 222', rate: 9.5, pin: '1111' },
-  { name: 'Lucía Fernández', username: 'lucia', phone: '600 333 444', rate: 10, pin: '2222' },
-  { name: 'Andrés Gómez', username: 'andres', phone: '600 555 666', rate: 8.75, pin: '3333' },
+  { name: 'Carlos Martínez', username: 'carlos', phone: '600 111 222', rate: 350, pin: '1111' },
+  { name: 'Lucía Fernández', username: 'lucia', phone: '600 333 444', rate: 400, pin: '2222' },
+  { name: 'Andrés Gómez', username: 'andres', phone: '600 555 666', rate: 320, pin: '3333' },
   { name: 'Sofía Ramírez', username: 'sofia', phone: '', rate: '', pin: '4444' },
-  { name: 'Demo Trabajador', username: 'demo', phone: '', rate: 9, pin: '1234' },
+  { name: 'Demo Trabajador', username: 'demo', phone: '', rate: 300, pin: '1234' },
 ];
 
 const addDays = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -38,7 +38,7 @@ async function seedDemo(base) {
   const { today } = await call('GET', '/api/time');
 
   const starts = ['07:55', '08:00', '08:05', '08:10', '07:50'];
-  const ends = ['17:00', '16:30', '17:15', '15:00', '17:05'];
+  const ends = ['17:00', '16:30', '18:15', '15:00', '17:45'];
   for (let back = 13; back >= 1; back--) {
     const date = addDays(today, -back);
     if (dow(date) === 0) continue; // domingo libre

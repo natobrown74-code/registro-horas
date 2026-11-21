@@ -18,7 +18,7 @@ Abre http://localhost:3000. La primera vez te pedirá crear la cuenta de adminis
 |---|---|---|
 | `PORT` | Puerto del servidor | `3000` |
 | `APP_TZ` | Zona horaria del negocio, p. ej. `America/Mexico_City`, `Europe/Madrid` | la del servidor |
-| `APP_CURRENCY` | Símbolo de moneda | `$` |
+| `APP_CURRENCY` | Símbolo de moneda | `₪` |
 | `APP_NAME` | Nombre que aparece arriba | `Registro de Horas` |
 | `DB_PATH` | Archivo de la base de datos | `data/horas.db` |
 | `SETUP_CODE` | Código secreto que se pide al crear el administrador (**úsalo al publicarla en internet**) | (sin código) |
@@ -38,7 +38,8 @@ Sirve cualquier servicio que ejecute Node.js y tenga **disco persistente** (Rend
 
 ## Qué incluye esta versión
 
-- **Trabajador** (usuario + PIN de 4 números): botón grande ENTRAR / SALIR con la hora del servidor, pregunta de descanso al salir, horas de hoy / semana / mes. No puede registrar horas a mano: si olvida fichar, lo corrige el administrador.
+- **Trabajador** (usuario + PIN de 4 números): solo consulta. Ve sus horas (hoy, semana, quincena, mes) y lo que ha ganado en el mes hasta hoy. No puede marcar entrada ni salida ni cambiar horas: todo lo registra el administrador.
+- **Pago**: cada trabajador tiene un pago por día (jornada de 8 horas). Si trabaja menos, se paga la parte proporcional. Cada hora que pase de 8 en un día se paga como hora extra: el precio lo fija el administrador o, si lo deja vacío, es la hora normal + 50 %. Moneda: shekel (₪).
 - **Administrador** (correo + contraseña): alta, edición y desactivación de trabajadores; tabla de horas por día, semana, quincena o mes, filtrable por trabajador; horas por día; totales y pago estimado; añadir / corregir / borrar registros; alertas de quien entró y no marcó salida.
 - **Reportes**: exportar a Excel (.xlsx con hojas «Resumen» y «Detalle») e imprimir / guardar como PDF el resumen para nómina (con columna de firma).
 - **Seguridad**: PIN y contraseña cifrados, bloqueo de 5 minutos tras 5 intentos fallidos, sesiones en el servidor, cada trabajador solo puede ver lo suyo, no se permiten registros que se crucen ni dos entradas abiertas.

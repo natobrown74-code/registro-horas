@@ -9,7 +9,10 @@ const { DatabaseSync } = require('node:sqlite');
 
 const PORT = Number(process.env.PORT) || 3000;
 const TZ = process.env.APP_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
-const CURRENCY = process.env.APP_CURRENCY || '$';
+const CURRENCY = process.env.APP_CURRENCY || '₪';
+// Jornada normal: las horas que pasen de esto en un día se pagan como horas extra.
+const DAY_MIN = 8 * 60;
+const OT_PCT = 50; // recargo de la hora extra (%) cuando el administrador no fija un precio
 const BUSINESS = process.env.APP_NAME || 'Registro de Horas';
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'horas.db');
 const SECURE_COOKIE = process.env.COOKIE_SECURE === '1';
@@ -57,6 +60,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires INTEGER NOT NULL
 );
 `);
+// Migración: precio de la hora extra (columna nueva).
+if (!db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'ot_rate')) db.exec('ALTER TABLE users ADD COLUMN ot_rate REAL');
 
 const q = (sql) => db.prepare(sql);
 
@@ -194,7 +199,14 @@ function currentUser(req) {
     WHERE s.token_hash = ? AND s.expires > ? AND u.active = 1`).get(sha(token), Date.now()) || null;
 }
 function publicUser(u) {
-  return { id: u.id, role: u.role, name: u.name, username: u.username, email: u.email, phone: u.phone || '', rate: u.rate, active: !!u.active };
+  return { id: u.id, role: u.role, name: u.name, username: u.username, email: u.email, phone: u.phone || '', rate: u.rate, otRate: u.ot_rate, otRateAuto: otRateOf({ rate: u.rate }), active: !!u.active };
+}
+
+// Precio de la hora extra: el que fije el administrador, o el valor de una hora normal (pago del día / 8) + 50 %.
+function otRateOf(u) {
+  if (u.ot_rate != null && u.ot_rate >= 0) return u.ot_rate;
+  if (u.rate == null || !(u.rate > 0)) return null;
+  return Math.round(u.rate / (DAY_MIN / 60) * (1 + OT_PCT / 100) * 100) / 100;
 }
 
 // ---------------------------------------------------------------- Informes
@@ -211,7 +223,7 @@ function report(from, to, workerId) {
     : q("SELECT * FROM users WHERE role = 'worker' AND (active = 1 OR id IN (SELECT user_id FROM entries WHERE work_date BETWEEN ? AND ?)) ORDER BY name COLLATE NOCASE").all(from, to);
 
   const byId = new Map(workers.map((w) => [w.id, {
-    id: w.id, name: w.name, rate: w.rate, active: !!w.active, minutes: 0, days: new Set(), byDate: {}, open: 0, pay: null,
+    id: w.id, name: w.name, rate: w.rate, otRate: otRateOf(w), active: !!w.active, minutes: 0, extraMinutes: 0, basePay: null, extraPay: null, days: new Set(), byDate: {}, open: 0, pay: null,
   }]));
   for (const e of rows) {
     const w = byId.get(e.user_id);
@@ -222,15 +234,25 @@ function report(from, to, workerId) {
     w.days.add(e.work_date);
     w.byDate[e.work_date] = (w.byDate[e.work_date] || 0) + m;
   }
-  let totalMin = 0, totalPay = 0, anyPay = false;
+  // Pago: cada día se paga la jornada (8 h = pago del día; si trabaja menos, la parte proporcional)
+  // y cada hora que pase de 8 ese día se paga al precio de la hora extra.
+  let totalMin = 0, totalExtra = 0, totalPay = 0, anyPay = false;
   const summary = [...byId.values()].map((w) => {
     totalMin += w.minutes;
-    if (w.rate != null && w.rate > 0) { w.pay = Math.round(w.rate * w.minutes / 60 * 100) / 100; totalPay += w.pay; anyPay = true; }
+    let regular = 0, extra = 0;
+    for (const m of Object.values(w.byDate)) { regular += Math.min(m, DAY_MIN); extra += Math.max(0, m - DAY_MIN); }
+    w.extraMinutes = extra; totalExtra += extra;
+    if (w.rate != null && w.rate > 0) {
+      w.basePay = Math.round(w.rate * regular / DAY_MIN * 100) / 100;
+      w.extraPay = Math.round((w.otRate || 0) * extra / 60 * 100) / 100;
+      w.pay = Math.round((w.basePay + w.extraPay) * 100) / 100;
+      totalPay += w.pay; anyPay = true;
+    }
     return { ...w, days: w.days.size };
   });
   return {
     from, to, summary, entries: rows.map(publicEntry),
-    total: { minutes: totalMin, pay: anyPay ? Math.round(totalPay * 100) / 100 : null },
+    total: { minutes: totalMin, extraMinutes: totalExtra, pay: anyPay ? Math.round(totalPay * 100) / 100 : null },
   };
 }
 
@@ -283,9 +305,11 @@ function buildXlsx(rep) {
   const summary = [
     [B(`${BUSINESS} — Resumen del ${rep.from} al ${rep.to}`)],
     [],
-    [B('Trabajador'), B('Días trabajados'), B('Horas'), B(`Tarifa (${CURRENCY}/h)`), B(`Pago estimado (${CURRENCY})`), B('Sin salida')],
-    ...rep.summary.map((w) => [w.name, w.days, h2(w.minutes), w.rate ?? '', w.pay ?? '', w.open || '']),
-    [B('TOTAL'), '', B(h2(rep.total.minutes)), '', rep.total.pay == null ? '' : B(rep.total.pay), ''],
+    [B('Trabajador'), B('Días trabajados'), B('Horas'), B('Horas extra'), B(`Pago por día (${CURRENCY})`), B(`Hora extra (${CURRENCY})`), B(`Pago jornadas (${CURRENCY})`), B(`Pago extras (${CURRENCY})`), B(`Pago total (${CURRENCY})`), B('Sin salida')],
+    ...rep.summary.map((w) => [w.name, w.days, h2(w.minutes), h2(w.extraMinutes), w.rate ?? '', w.rate ? (w.otRate ?? '') : '', w.basePay ?? '', w.extraPay ?? '', w.pay ?? '', w.open || '']),
+    [B('TOTAL'), '', B(h2(rep.total.minutes)), B(h2(rep.total.extraMinutes)), '', '', '', '', rep.total.pay == null ? '' : B(rep.total.pay), ''],
+    [],
+    ['Jornada normal: 8 horas al día. Las horas que pasan de 8 en un día se pagan como hora extra.'],
   ];
   const srcName = { clock: 'Reloj', manual: 'Manual (trabajador)', admin: 'Administrador' };
   const detail = [
@@ -386,41 +410,20 @@ function myStatus(user) {
     if (e.work_date >= ws) totals.week += m;
     if (e.work_date >= ms) totals.month += m;
   }
-  const open = q('SELECT * FROM entries WHERE user_id = ? AND end_ts IS NULL').get(user.id);
-  return { serverNow: now, today, open: open ? publicEntry(open) : null, totals };
+  const m = report(ms, today, user.id).summary[0] || {};
+  return { serverNow: now, today, totals, month: { from: ms, to: today, minutes: m.minutes || 0, extraMinutes: m.extraMinutes || 0, pay: m.pay ?? null } };
 }
 route('GET', '/api/my/status', 'worker', ({ user }) => myStatus(user));
 
-route('POST', '/api/my/clock-in', 'worker', ({ user }) => {
-  if (q('SELECT 1 FROM entries WHERE user_id = ? AND end_ts IS NULL').get(user.id)) throw bad('Ya tienes una entrada abierta. Marca la salida primero.');
-  const now = Date.now();
-  assertNoOverlap(user.id, now, null);
-  q("INSERT INTO entries (user_id, work_date, start_ts, source, created_at) VALUES (?, ?, ?, 'clock', ?)")
-    .run(user.id, localDate(now), now, now);
-  return myStatus(user);
-});
-
-route('POST', '/api/my/clock-out', 'worker', ({ user, body }) => {
-  const open = q('SELECT * FROM entries WHERE user_id = ? AND end_ts IS NULL').get(user.id);
-  if (!open) throw bad('No tienes ninguna entrada abierta.');
-  const now = Date.now();
-  const breakMin = parseInt(body.breakMin ?? 0, 10);
-  if (!Number.isFinite(breakMin) || breakMin < 0 || breakMin > 600) throw bad('Los minutos de descanso no son válidos.');
-  const worked = (now - open.start_ts) / 60000;
-  if (breakMin > 0 && breakMin >= worked) throw bad(`El descanso no puede ser mayor que el tiempo trabajado (${Math.floor(worked)} min).`);
-  q('UPDATE entries SET end_ts = ?, break_min = ?, updated_at = ?, updated_by = ? WHERE id = ?')
-    .run(now, breakMin, now, user.id, open.id);
-  return myStatus(user);
-});
-
-// Los trabajadores solo pueden fichar con ENTRAR / SALIR; las correcciones las hace el administrador.
+// Los trabajadores solo CONSULTAN sus horas y lo que han ganado. Las horas y los precios los pone el administrador.
 
 route('GET', '/api/my/entries', 'worker', ({ user, query }) => {
   const { from, to } = query;
   if (!isDate(from) || !isDate(to) || from > to) throw bad('Rango de fechas no válido.');
   const rows = q('SELECT * FROM entries WHERE user_id = ? AND work_date BETWEEN ? AND ? ORDER BY start_ts DESC').all(user.id, from, to);
   const entries = rows.map(publicEntry);
-  return { entries, totalMinutes: entries.reduce((s, e) => s + e.minutes, 0) };
+  const m = report(from, to, user.id).summary[0] || {};
+  return { entries, totalMinutes: entries.reduce((s, e) => s + e.minutes, 0), extraMinutes: m.extraMinutes || 0, pay: m.pay ?? null };
 });
 
 // ---- Administrador
@@ -428,24 +431,27 @@ function readWorker(body, existing) {
   const name = String(body.name ?? existing?.name ?? '').trim();
   const username = String(body.username ?? existing?.username ?? '').trim().toLowerCase();
   const phone = String(body.phone ?? '').trim().slice(0, 40);
-  let rate = body.rate === '' || body.rate == null ? null : Number(String(body.rate).replace(',', '.'));
+  const num = (v) => (v === '' || v == null ? null : Number(String(v).replace(',', '.')));
+  const rate = num(body.rate);
+  const otRate = num(body.otRate);
   if (!name) throw bad('Escribe el nombre del trabajador.');
   if (!/^[a-z0-9._-]{2,30}$/.test(username)) throw bad('El usuario debe tener de 2 a 30 caracteres: letras sin acentos, números, punto o guion.');
-  if (rate != null && (!Number.isFinite(rate) || rate < 0)) throw bad('La tarifa por hora no es válida.');
+  if (rate != null && (!Number.isFinite(rate) || rate < 0)) throw bad('El pago por día no es válido.');
+  if (otRate != null && (!Number.isFinite(otRate) || otRate < 0)) throw bad('El precio de la hora extra no es válido.');
   const pin = String(body.pin ?? '');
   if (pin && !/^\d{4}$/.test(pin)) throw bad('El PIN debe tener exactamente 4 números.');
   if (!existing && !pin) throw bad('Asigna un PIN de 4 números.');
   const dup = q('SELECT id FROM users WHERE username = ? AND id != ?').get(username, existing?.id ?? 0);
   if (dup) throw bad('Ese usuario ya existe. Elige otro.');
-  return { name, username, phone, rate, pin };
+  return { name, username, phone, rate, otRate, pin };
 }
 route('GET', '/api/admin/workers', 'admin', () => ({
   workers: q("SELECT * FROM users WHERE role = 'worker' ORDER BY active DESC, name COLLATE NOCASE").all().map(publicUser),
 }));
 route('POST', '/api/admin/workers', 'admin', ({ body }) => {
   const w = readWorker(body, null);
-  q("INSERT INTO users (role, name, username, phone, rate, secret_hash, created_at) VALUES ('worker', ?, ?, ?, ?, ?, ?)")
-    .run(w.name, w.username, w.phone, w.rate, hashSecret(w.pin), Date.now());
+  q("INSERT INTO users (role, name, username, phone, rate, ot_rate, secret_hash, created_at) VALUES ('worker', ?, ?, ?, ?, ?, ?, ?)")
+    .run(w.name, w.username, w.phone, w.rate, w.otRate, hashSecret(w.pin), Date.now());
   return { ok: true };
 });
 route('PUT', '/api/admin/workers/:id', 'admin', ({ body, params }) => {
@@ -453,8 +459,8 @@ route('PUT', '/api/admin/workers/:id', 'admin', ({ body, params }) => {
   if (!existing) throw new HttpError(404, 'Trabajador no encontrado.');
   const w = readWorker(body, existing);
   const active = body.active === undefined ? existing.active : (body.active ? 1 : 0);
-  q('UPDATE users SET name = ?, username = ?, phone = ?, rate = ?, active = ? WHERE id = ?')
-    .run(w.name, w.username, w.phone, w.rate, active, existing.id);
+  q('UPDATE users SET name = ?, username = ?, phone = ?, rate = ?, ot_rate = ?, active = ? WHERE id = ?')
+    .run(w.name, w.username, w.phone, w.rate, w.otRate, active, existing.id);
   if (w.pin) q('UPDATE users SET secret_hash = ? WHERE id = ?').run(hashSecret(w.pin), existing.id);
   if (!active || w.pin) q('DELETE FROM sessions WHERE user_id = ?').run(existing.id);
   return { ok: true };
